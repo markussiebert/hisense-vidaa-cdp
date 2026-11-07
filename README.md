@@ -97,3 +97,15 @@ python3 test_cdp.py <tv-ip> vol 20
 python3 test_cdp.py <tv-ip> source 3
 python3 test_cdp.py <tv-ip> app Netflix
 ```
+
+## Credits
+
+Thanks to [**chrisns/hisense_vidaa**](https://github.com/chrisns/hisense_vidaa)
+(MIT, © 2026 Chris Nesbitt-Smith) — an independent integration using the same
+Chrome DevTools approach. This project adapts two things from it: the
+single-persistent-WebSocket connection pattern (and the hard-won finding that a
+connect/close cycle per call eventually strands a debugger session on the TV),
+and the `parse_inputs()` decode of the TV's input list. See
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). If your TV speaks the VIDAA
+MQTT protocol (port 36669), chrisns' integration is the more feature-complete
+choice; this one exists for older sets where only the CDP port is open.

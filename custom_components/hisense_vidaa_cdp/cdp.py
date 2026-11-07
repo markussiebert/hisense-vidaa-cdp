@@ -7,6 +7,12 @@ it can be exercised standalone (see ``test_cdp.py``).
 The TV's Chromium accepts only a single WebSocket debugger client per page, so
 this client holds one connection open and reuses it across calls. A failed call
 drops the socket and retries once on a fresh connection.
+
+The single-persistent-connection approach (and the finding that a connect/close
+cycle per call eventually strands a debugger session until the TV is mains power-
+cycled), together with the ``parse_inputs`` 6-tuple decode below, are adapted from
+chrisns/hisense_vidaa (MIT, Copyright (c) 2026 Chris Nesbitt-Smith). See
+THIRD-PARTY-NOTICES.md.
 """
 
 from __future__ import annotations
@@ -75,7 +81,10 @@ class TVOffline(Exception):
 
 
 def parse_inputs(raw: list[str]) -> list[dict]:
-    """Parse the flat 6-tuple array from model.source.getInputName()."""
+    """Parse the flat 6-tuple array from model.source.getInputName().
+
+    Adapted from chrisns/hisense_vidaa (MIT, (c) 2026 Chris Nesbitt-Smith).
+    """
     out = []
     for i in range(0, len(raw) - 5, 6):
         out.append({
