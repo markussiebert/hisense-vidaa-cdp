@@ -38,8 +38,6 @@ class HisenseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch the current state from the TV."""
         try:
-            if not await self.client.is_on():
-                return {"power": "off"}
             status = await self.client.get_status()
         except TVOffline:
             # Standby is expected, not an error.

@@ -3,6 +3,10 @@
 The TV exposes a CDP endpoint on TCP port 9223. This module only talks to that
 endpoint over HTTP/WebSocket using aiohttp; it has no Home Assistant imports so
 it can be exercised standalone (see ``test_cdp.py``).
+
+The TV's Chromium accepts only a single WebSocket debugger client per page, so
+this client holds one connection open and reuses it across calls. A failed call
+drops the socket and retries once on a fresh connection.
 """
 
 from __future__ import annotations
@@ -27,9 +31,11 @@ except ImportError:  # pragma: no cover - allows running the file standalone
     )
 
 # Overall budget for a single Runtime.evaluate round-trip, in seconds.
-EVALUATE_TIMEOUT = 5
+EVALUATE_TIMEOUT = 10
 # Budget for fetching the CDP target list, in seconds.
 TARGET_LIST_TIMEOUT = 4
+# Budget for establishing the WebSocket connection, in seconds.
+WS_CONNECT_TIMEOUT = 10
 
 _STATUS_EXPRESSION = (
     "(function(){var out={};"
@@ -66,8 +72,11 @@ class HisenseCDP:
     def __init__(self, host: str, session: aiohttp.ClientSession) -> None:
         """Store the TV host and the shared aiohttp session."""
         self.host = host
-        self.session = session
         self.base_url = f"http://{host}:{CDP_PORT}"
+        self._session = session
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._msg_id = 0
+        self._lock = asyncio.Lock()
 
     async def _ws_url(self) -> str:
         """Return the WebSocket debugger URL of the TV's CDP page target.
@@ -76,53 +85,172 @@ class HisenseCDP:
         """
         try:
             timeout = aiohttp.ClientTimeout(total=TARGET_LIST_TIMEOUT)
-            async with self.session.get(
-                f"{self.base_url}/json/list", timeout=timeout
+            async with self._session.get(
+                f"{self.base_url}/json", timeout=timeout
             ) as resp:
                 targets = await resp.json(content_type=None)
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            OSError,
+            ValueError,
+        ) as err:
             raise TVOffline(f"TV at {self.host} is unreachable: {err}") from err
 
         if not isinstance(targets, list) or not targets:
             raise TVOffline(f"TV at {self.host} exposes no CDP targets")
 
-        target = next(
-            (t for t in targets if isinstance(t, dict) and t.get("type") == "page"),
-            targets[0],
-        )
-        if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
-            raise TVOffline(f"TV at {self.host} exposes no WebSocket debugger URL")
+        candidates = [
+            target
+            for target in targets
+            if isinstance(target, dict)
+            and target.get("type") == "page"
+            and target.get("webSocketDebuggerUrl")
+        ]
+        if not candidates:
+            raise TVOffline(f"TV at {self.host} exposes no page target")
 
+        target = next(
+            (
+                candidate
+                for candidate in candidates
+                if str(candidate.get("url", "")).endswith("index.html")
+            ),
+            candidates[0],
+        )
         return str(target["webSocketDebuggerUrl"])
 
-    async def evaluate(self, expression: str) -> Any:
-        """Evaluate ``expression`` in the TV UI and return its value."""
-        ws_url = await self._ws_url()
+    async def _ensure_ws(self) -> aiohttp.ClientWebSocketResponse:
+        """Return the held WebSocket, connecting first if necessary."""
+        if self._ws is not None and not self._ws.closed:
+            return self._ws
 
+        ws_url = await self._ws_url()
         try:
-            async with self.session.ws_connect(
-                ws_url, timeout=EVALUATE_TIMEOUT
-            ) as ws:
-                await ws.send_json(
-                    {
-                        "id": 1,
-                        "method": "Runtime.evaluate",
-                        "params": {
-                            "expression": expression,
-                            "returnByValue": True,
-                        },
-                    }
-                )
-                reply = await self._wait_for_reply(ws)
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            # No heartbeat: this Chromium never answers pings, and aiohttp
+            # would tear the socket down when the pongs never arrive.
+            ws = await asyncio.wait_for(
+                self._session.ws_connect(ws_url), timeout=WS_CONNECT_TIMEOUT
+            )
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            OSError,
+        ) as err:
+            self._ws = None
             raise TVOffline(f"TV at {self.host} is unreachable: {err}") from err
+
+        self._ws = ws
+        return ws
+
+    async def _drop_ws(self) -> None:
+        """Close the held WebSocket (best effort) and forget it."""
+        ws, self._ws = self._ws, None
+        if ws is None:
+            return
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001 - closing is best effort
+            pass
+
+    async def async_close(self) -> None:
+        """Release the held WebSocket connection."""
+        async with self._lock:
+            await self._drop_ws()
+
+    async def _read_reply(
+        self,
+        ws: aiohttp.ClientWebSocketResponse,
+        msg_id: int,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Read messages until the reply with ``msg_id`` arrives."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError("timed out waiting for CDP reply")
+            msg = await ws.receive(timeout=remaining)
+
+            if msg.type in (
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.ERROR,
+            ):
+                raise TVOffline(
+                    f"WebSocket to {self.host} closed: {ws.exception()}"
+                )
+
+            if msg.type is not aiohttp.WSMsgType.TEXT:
+                # Binary frames and events are not replies; ignore them.
+                continue
+
+            try:
+                reply = json.loads(msg.data)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(reply, dict) and reply.get("id") == msg_id:
+                return reply
+
+    async def _ws_call(
+        self,
+        method: str,
+        params: dict[str, Any],
+        timeout: float = EVALUATE_TIMEOUT,
+    ) -> dict[str, Any]:
+        """Send one CDP command on the held socket and return its reply."""
+        async with self._lock:
+            last_err: Exception | None = None
+            for _attempt in range(2):
+                try:
+                    ws = await self._ensure_ws()
+                    self._msg_id += 1
+                    msg_id = self._msg_id
+                    await ws.send_json(
+                        {"id": msg_id, "method": method, "params": params}
+                    )
+                    return await self._read_reply(ws, msg_id, timeout)
+                except (
+                    aiohttp.ClientError,
+                    asyncio.TimeoutError,
+                    OSError,
+                    TVOffline,
+                ) as err:
+                    last_err = err
+                    await self._drop_ws()
+
+            raise TVOffline(
+                f"TV at {self.host} is unreachable: {last_err}"
+            ) from last_err
+
+    async def evaluate(
+        self, expression: str, timeout: float = EVALUATE_TIMEOUT
+    ) -> Any:
+        """Evaluate ``expression`` in the TV UI and return its value."""
+        reply = await self._ws_call(
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": True,
+            },
+            timeout,
+        )
 
         if "error" in reply:
             raise RuntimeError(f"CDP error: {reply['error']}")
 
-        result = reply.get("result", {}).get("result", {})
-        exception = reply.get("result", {}).get("exceptionDetails")
-        if exception or result.get("wasThrown"):
+        container = reply.get("result") or {}
+        result = container.get("result") or {}
+        exception = container.get("exceptionDetails")
+        if (
+            exception
+            or container.get("wasThrown")
+            or result.get("wasThrown")
+            or result.get("subtype") == "error"
+        ):
             detail = ""
             if exception:
                 detail = (
@@ -130,27 +258,11 @@ class HisenseCDP:
                     or exception.get("text")
                     or str(exception)
                 )
+            elif result.get("description"):
+                detail = result["description"]
             raise RuntimeError(f"JavaScript error: {detail or 'unknown error'}")
 
         return result.get("value")
-
-    async def _wait_for_reply(
-        self, ws: aiohttp.ClientWebSocketResponse
-    ) -> dict[str, Any]:
-        """Read messages until the reply with ``id == 1`` arrives."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + EVALUATE_TIMEOUT
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise asyncio.TimeoutError("timed out waiting for CDP reply")
-            try:
-                msg = await ws.receive_json(timeout=remaining)
-            except (ValueError, TypeError):
-                # Non-JSON or binary frame (e.g. a CDP event): ignore it.
-                continue
-            if isinstance(msg, dict) and msg.get("id") == 1:
-                return msg
 
     async def is_on(self) -> bool:
         """Return True when the TV's CDP port answers."""
