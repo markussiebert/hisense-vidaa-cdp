@@ -19,7 +19,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .cdp import HisenseCDP
+from .cdp import HisenseCDP, parse_inputs
 from .const import (
     CONF_BROADCAST,
     CONF_HOST,
@@ -62,7 +62,6 @@ class HisenseMediaPlayer(
         | MediaPlayerEntityFeature.SELECT_SOURCE
         | MediaPlayerEntityFeature.PLAY_MEDIA
     )
-    _attr_source_list = list(SOURCES)
 
     def __init__(
         self,
@@ -132,7 +131,21 @@ class HisenseMediaPlayer(
         """Return the currently selected source label."""
         if not self._is_on:
             return None
-        return SOURCE_BY_INDEX.get(self.coordinator.data.get("source"))
+        current = self.coordinator.data.get("source")
+        for input_ in self._inputs:
+            if input_["uid"] == current:
+                return input_["name"]
+        return SOURCE_BY_INDEX.get(current)
+
+    @property
+    def _inputs(self) -> list[dict]:
+        """Return the TV's input list as parsed by ``parse_inputs``."""
+        return parse_inputs(self.coordinator.data.get("inputs") or [])
+
+    @property
+    def source_list(self) -> list[str]:
+        """Return the available input source labels."""
+        return [input_["name"] for input_ in self._inputs] or list(SOURCES)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -198,6 +211,12 @@ class HisenseMediaPlayer(
 
     async def async_select_source(self, source: str) -> None:
         """Switch to the given input source."""
+        for input_ in self._inputs:
+            if input_["name"] == source:
+                await self.client.set_source(input_["uid"])
+                await self.coordinator.async_request_refresh()
+                return
+
         index = SOURCES.get(source)
         if index is None:
             _LOGGER.warning("Unknown source: %s", source)

@@ -44,6 +44,14 @@ _STATUS_EXPRESSION = (
     "try{out.mute=window.model.sound.getMainMute();}catch(e){}"
     "try{var c=window.liveTV.getCurrentChannelInfo();"
     "if(c){out.channel_number=c.number;out.channel_name=c.name;}}catch(e){}"
+    "try{out.inputs=model.source.getInputName();}catch(e){}"
+    "try{out.backlight=model.video.getBacklight();}catch(e){}"
+    "try{out.brightness=model.video.getBrightness();}catch(e){}"
+    "try{out.contrast=model.video.getContrast();}catch(e){}"
+    "try{out.colour_intensity=model.video.getColourIntensity();}catch(e){}"
+    "try{out.sharpness=model.video.getSharpness();}catch(e){}"
+    "try{out.eco_sensor=model.video.getEcoSensor();}catch(e){}"
+    "try{out.freeze=model.video.getFreeze();}catch(e){}"
     "return JSON.stringify(out);})()"
 )
 
@@ -64,6 +72,18 @@ _POWER_OFF_EXPRESSION = (
 
 class TVOffline(Exception):
     """Raised when the TV's CDP port cannot be reached (TV is in standby)."""
+
+
+def parse_inputs(raw: list[str]) -> list[dict]:
+    """Parse the flat 6-tuple array from model.source.getInputName()."""
+    out = []
+    for i in range(0, len(raw) - 5, 6):
+        out.append({
+            "uid": int(raw[i]),
+            "name": raw[i + 1],
+            "available": raw[i + 2] == "1",
+        })
+    return out
 
 
 class HisenseCDP:
@@ -291,6 +311,41 @@ class HisenseCDP:
         await self.evaluate(
             "window.model.sound.setMainMute(%d)" % (1 if mute else 0)
         )
+
+    async def set_backlight(self, value: int) -> None:
+        """Set the backlight, clamped to 0..100."""
+        value = max(0, min(100, int(value)))
+        await self.evaluate("model.video.setBacklight(%d)" % value)
+
+    async def set_brightness(self, value: int) -> None:
+        """Set the brightness, clamped to 0..100."""
+        value = max(0, min(100, int(value)))
+        await self.evaluate("model.video.setBrightness(%d)" % value)
+
+    async def set_contrast(self, value: int) -> None:
+        """Set the contrast, clamped to 0..100."""
+        value = max(0, min(100, int(value)))
+        await self.evaluate("model.video.setContrast(%d)" % value)
+
+    async def set_colour_intensity(self, value: int) -> None:
+        """Set the colour intensity, clamped to 0..100."""
+        value = max(0, min(100, int(value)))
+        await self.evaluate("model.video.setColourIntensity(%d)" % value)
+
+    async def set_sharpness(self, value: int) -> None:
+        """Set the sharpness, clamped to 0..100."""
+        value = max(0, min(100, int(value)))
+        await self.evaluate("model.video.setSharpness(%d)" % value)
+
+    async def set_eco_sensor(self, on: bool) -> None:
+        """Enable or disable the eco sensor."""
+        await self.evaluate(
+            "model.video.setEcoSensor(%d)" % (1 if on else 0)
+        )
+
+    async def set_freeze(self, on: bool) -> None:
+        """Enable or disable the picture freeze."""
+        await self.evaluate("model.video.setFreeze(%d)" % (1 if on else 0))
 
     async def send_key(self, code: int) -> None:
         """Dispatch a DOM keyboard event with the given key code."""
