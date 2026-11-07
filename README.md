@@ -20,6 +20,18 @@ selection, app launching and current channel readout.
 | App launch | `StartApplication(name)` |
 | Current channel / source | Polled from the TV UI every 10 seconds |
 
+## Compatibility
+
+Developed and **tested against a Hisense H70NU9700** (service/board model
+`HE70M9710UWTSG`, VIDAA, platform Hisense MT5658 / `SmartTV_2017`, UI on
+Chrome 53). All features in the table above were verified live on that set.
+
+Other Hisense VIDAA models that expose the DevTools port (9223) will very likely
+work, but are **unconfirmed** — the native method names this integration relies on
+(`switchOffTV`, `model.sound.*`, `changeSourceTo`, `liveTV.getCurrentChannelInfo`,
+`StartApplication`) may differ across VIDAA versions. Reports of working/non-working
+models are welcome via the issue tracker.
+
 ## Requirements
 
 - Home Assistant 2024.1 or newer
