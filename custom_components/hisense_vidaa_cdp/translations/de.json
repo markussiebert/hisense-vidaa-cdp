@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Hisense VIDAA (CDP)",
+        "description": "Verbinde einen Hisense-VIDAA-Fernseher über seinen DevTools-Port (9223).",
+        "data": {
+          "host": "Host",
+          "mac": "MAC-Adresse (für Wake-on-LAN)",
+          "broadcast_address": "Broadcast-Adresse (optional)",
+          "name": "Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Der Fernseher ist nicht erreichbar. Prüfe die IP-Adresse und ob das Gerät im Netzwerk eingeschaltet ist."
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Hisense VIDAA (CDP)",
+        "description": "Connect to a Hisense VIDAA TV over its DevTools port (9223).",
+        "data": {
+          "host": "Host",
+          "mac": "MAC address (for Wake-on-LAN)",
+          "broadcast_address": "Broadcast address (optional)",
+          "name": "Name"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the TV. Check the IP address and that the TV is on the network."
+    }
+  }
+}
